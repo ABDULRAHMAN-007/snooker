@@ -1,0 +1,709 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>8-Ball Pool with Realistic Physics</title>
+  <style>
+    body {
+      margin: 0;
+      padding: 0;
+      background: #004400;
+      overflow: hidden;
+      touch-action: none;
+      font-family: Arial, sans-serif;
+    }
+    #game-container {
+      position: relative;
+      width: 100vw;
+      height: 100vh;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+    }
+    canvas {
+      background: #006600;
+      border: 10px solid #552200;
+      box-shadow: 0 0 20px #000;
+      max-width: 100%;
+      max-height: 100%;
+      object-fit: contain;
+    }
+    #power-indicator {
+      position: absolute;
+      bottom: 20px;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 80%;
+      max-width: 300px;
+      height: 20px;
+      background: rgba(0,0,0,0.5);
+      border-radius: 10px;
+      overflow: hidden;
+    }
+    #power-bar {
+      height: 100%;
+      width: 0%;
+      background: linear-gradient(to right, #00ff00, #ffff00, #ff0000);
+      transition: width 0.1s;
+    }
+    #mobile-controls {
+      position: absolute;
+      top: 10px;
+      left: 10px;
+      color: white;
+      font-size: 14px;
+      background: rgba(0,0,0,0.5);
+      padding: 5px 10px;
+      border-radius: 5px;
+    }
+    #score-display {
+      position: absolute;
+      top: 10px;
+      right: 10px;
+      color: white;
+      font-size: 16px;
+      background: rgba(0,0,0,0.5);
+      padding: 5px 10px;
+      border-radius: 5px;
+    }
+    #game-state {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      color: white;
+      font-size: 24px;
+      background: rgba(0,0,0,0.7);
+      padding: 10px 20px;
+      border-radius: 10px;
+      text-align: center;
+      display: none;
+    }
+    #reset-btn {
+      margin-top: 10px;
+      padding: 5px 10px;
+      background: #552200;
+      color: white;
+      border: none;
+      border-radius: 5px;
+      cursor: pointer;
+    }
+  </style>
+</head>
+<body>
+<div id="game-container">
+  <canvas id="game"></canvas>
+  <div id="power-indicator">
+    <div id="power-bar"></div>
+  </div>
+  <div id="mobile-controls">Touch and drag to aim, release to shoot</div>
+  <div id="score-display">Player: 0 | Opponent: 0</div>
+  <div id="game-state">
+    <div id="state-message"></div>
+    <button id="reset-btn">New Game</button>
+  </div>
+</div>
+
+<script>
+// Game setup
+const gameContainer = document.getElementById('game-container');
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const powerBar = document.getElementById('power-bar');
+const scoreDisplay = document.getElementById('score-display');
+const gameStateDiv = document.getElementById('game-state');
+const stateMessage = document.getElementById('state-message');
+const resetBtn = document.getElementById('reset-btn');
+
+// Sound effects
+const sounds = {
+  hit: new Audio('data:audio/wav;base64,UklGRl9vT19XQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YU...'), // Shortened for brevity
+  pocket: new Audio('data:audio/wav;base64,UklGRl9vT19XQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YU...'),
+  cue: new Audio('data:audio/wav;base64,UklGRl9vT19XQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YU...')
+};
+
+// Dynamic canvas sizing
+function resizeCanvas() {
+  const containerWidth = gameContainer.clientWidth;
+  const containerHeight = gameContainer.clientHeight;
+  
+  // Maintain 2:1 aspect ratio (like a pool table)
+  const targetRatio = 2;
+  let canvasWidth, canvasHeight;
+  
+  if (containerWidth / containerHeight > targetRatio) {
+    canvasHeight = containerHeight * 0.9;
+    canvasWidth = canvasHeight * targetRatio;
+  } else {
+    canvasWidth = containerWidth * 0.9;
+    canvasHeight = canvasWidth / targetRatio;
+  }
+  
+  canvas.width = canvasWidth;
+  canvas.height = canvasHeight;
+  
+  // Reposition balls if needed
+  if (balls.length > 0) {
+    const scaleX = canvasWidth / originalCanvasWidth;
+    const scaleY = canvasHeight / originalCanvasHeight;
+    
+    balls.forEach(ball => {
+      ball.x = ball.originalX * scaleX;
+      ball.y = ball.originalY * scaleY;
+      ball.radius = BALL_RADIUS * Math.min(scaleX, scaleY);
+    });
+    
+    pockets.forEach(pocket => {
+      pocket.x = pocket.originalX * scaleX;
+      pocket.y = pocket.originalY * scaleY;
+      pocket.radius = POCKET_RADIUS * Math.min(scaleX, scaleY);
+    });
+  }
+}
+
+const originalCanvasWidth = 800;
+const originalCanvasHeight = 400;
+let BALL_RADIUS = 10;
+const FRICTION = 0.985;  // Slightly less friction for more realistic movement
+let POCKET_RADIUS = 18;
+const POWER_SCALE = 0.7;
+const MAX_POWER = 50;
+const CUE_LENGTH = 150;
+
+let balls = [];
+let cueBall;
+let isAiming = false;
+let power = 0;
+let aimAngle = 0;
+let isShooting = false;
+let touchStartTime = 0;
+let lastTouchTime = 0;
+let touchStartPos = {x: 0, y: 0};
+let playerScore = 0;
+let opponentScore = 0;
+let gameActive = true;
+let currentPlayer = 1; // 1 or 2
+let ballsPocketedThisTurn = [];
+let firstBallHit = null;
+
+let pockets = [];
+
+// Ball class
+class Ball {
+  constructor(x, y, color, number, type) {
+    this.originalX = x;
+    this.originalY = y;
+    this.x = x;
+    this.y = y;
+    this.vx = 0;
+    this.vy = 0;
+    this.radius = BALL_RADIUS;
+    this.color = color;
+    this.number = number;
+    this.type = type; // 'solid', 'stripe', 'black', 'white'
+    this.visible = true;
+    this.mass = 1;
+  }
+
+  update() {
+    if (!this.visible) return;
+
+    this.x += this.vx;
+    this.y += this.vy;
+    this.vx *= FRICTION;
+    this.vy *= FRICTION;
+
+    // Stop very slow balls
+    if (Math.abs(this.vx) < 0.05) this.vx = 0;
+    if (Math.abs(this.vy) < 0.05) this.vy = 0;
+
+    // Wall collisions with energy loss
+    if (this.x - this.radius < 0 || this.x + this.radius > canvas.width) {
+      this.vx *= -0.85;
+      this.x = Math.max(this.radius, Math.min(this.x, canvas.width - this.radius));
+      sounds.hit.currentTime = 0;
+      sounds.hit.play();
+    }
+    if (this.y - this.radius < 0 || this.y + this.radius > canvas.height) {
+      this.vy *= -0.85;
+      this.y = Math.max(this.radius, Math.min(this.y, canvas.height - this.radius));
+      sounds.hit.currentTime = 0;
+      sounds.hit.play();
+    }
+
+    // Check pocket
+    for (let p of pockets) {
+      const dx = this.x - p.x;
+      const dy = this.y - p.y;
+      if (Math.sqrt(dx * dx + dy * dy) < p.radius) {
+        this.visible = false;
+        this.vx = this.vy = 0;
+        
+        // Record pocketed ball
+        if (!ballsPocketedThisTurn.includes(this)) {
+          ballsPocketedThisTurn.push(this);
+        }
+        
+        sounds.pocket.currentTime = 0;
+        sounds.pocket.play();
+        
+        if (this === cueBall) {
+          setTimeout(() => {
+            this.x = canvas.width * 0.2;
+            this.y = canvas.height / 2;
+            this.visible = true;
+            foul("Scratch! Cue ball pocketed.");
+          }, 1000);
+        } else if (this.number === 8) {
+          if (check8BallWinCondition()) {
+            endGame(`Player ${currentPlayer} wins by sinking the 8-ball correctly!`);
+          } else {
+            endGame(`Player ${currentPlayer} loses - sank the 8-ball too early!`);
+          }
+        }
+      }
+    }
+  }
+
+  draw() {
+    if (!this.visible) return;
+    
+    // Draw ball
+    ctx.beginPath();
+    ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
+    ctx.fillStyle = this.color;
+    ctx.fill();
+    
+    // Add stripe if needed
+    if (this.type === 'stripe') {
+      ctx.beginPath();
+      ctx.arc(this.x, this.y, this.radius * 0.8, 0, Math.PI);
+      ctx.fillStyle = "white";
+      ctx.fill();
+    }
+    
+    // Add number
+    if (this.number) {
+      ctx.fillStyle = this.type === 'stripe' ? 'black' : 'white';
+      ctx.font = `${this.radius * 0.6}px Arial`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(this.number.toString(), this.x, this.y);
+    }
+    
+    // Border
+    ctx.strokeStyle = "rgba(255,255,255,0.3)";
+    ctx.lineWidth = 1;
+    ctx.stroke();
+  }
+}
+
+function setup() {
+  // Reset game state
+  playerScore = 0;
+  opponentScore = 0;
+  currentPlayer = 1;
+  gameActive = true;
+  updateScoreDisplay();
+  gameStateDiv.style.display = 'none';
+  
+  // Set initial sizes based on canvas dimensions
+  BALL_RADIUS = canvas.width * 0.0125;
+  POCKET_RADIUS = canvas.width * 0.0225;
+  
+  // Create pockets
+  pockets = [
+    { originalX: 0, originalY: 0, x: 0, y: 0, radius: POCKET_RADIUS },
+    { originalX: 0.5, originalY: 0, x: canvas.width/2, y: 0, radius: POCKET_RADIUS },
+    { originalX: 1, originalY: 0, x: canvas.width, y: 0, radius: POCKET_RADIUS },
+    { originalX: 0, originalY: 1, x: 0, y: canvas.height, radius: POCKET_RADIUS },
+    { originalX: 0.5, originalY: 1, x: canvas.width/2, y: canvas.height, radius: POCKET_RADIUS },
+    { originalX: 1, originalY: 1, x: canvas.width, y: canvas.height, radius: POCKET_RADIUS }
+  ];
+
+  // Clear existing balls
+  balls = [];
+  
+  // Cue ball (white)
+  cueBall = new Ball(canvas.width * 0.2, canvas.height / 2, "white", null, "white");
+  balls.push(cueBall);
+
+  // Other balls in triangle formation
+  const startX = canvas.width * 0.75;
+  const startY = canvas.height / 2;
+  
+  // Ball colors and numbers (standard pool colors)
+  const ballData = [
+    {number: 1, color: "#FF0000", type: "solid"},    // Red
+    {number: 2, color: "#0000FF", type: "solid"},    // Blue
+    {number: 3, color: "#FF00FF", type: "solid"},    // Purple
+    {number: 4, color: "#FF6600", type: "solid"},    // Orange
+    {number: 5, color: "#993300", type: "solid"},    // Brown
+    {number: 6, color: "#008000", type: "solid"},    // Green
+    {number: 7, color: "#660000", type: "solid"},    // Maroon
+    {number: 8, color: "#000000", type: "black"},    // Black (8-ball)
+    {number: 9, color: "#FF0000", type: "stripe"},   // Red stripe
+    {number: 10, color: "#0000FF", type: "stripe"},  // Blue stripe
+    {number: 11, color: "#FF00FF", type: "stripe"}, // Purple stripe
+    {number: 12, color: "#FF6600", type: "stripe"}, // Orange stripe
+    {number: 13, color: "#993300", type: "stripe"}, // Brown stripe
+    {number: 14, color: "#008000", type: "stripe"}, // Green stripe
+    {number: 15, color: "#660000", type: "stripe"}  // Maroon stripe
+  ];
+  
+  // Shuffle the balls (except 8-ball which goes in the middle)
+  const shuffledBalls = [...ballData.filter(b => b.number !== 8)];
+  for (let i = shuffledBalls.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [shuffledBalls[i], shuffledBalls[j]] = [shuffledBalls[j], shuffledBalls[i]];
+  }
+  
+  // Insert 8-ball at position 5 (middle of the rack)
+  shuffledBalls.splice(4, 0, ballData.find(b => b.number === 8));
+  
+  // Position balls in triangle formation
+  let ballIndex = 0;
+  for (let row = 0; row < 5; row++) {
+    for (let col = 0; col <= row; col++) {
+      if (ballIndex >= shuffledBalls.length) break;
+      
+      const x = startX + row * BALL_RADIUS * 1.8 * Math.cos(Math.PI / 6);
+      const y = startY + (col - row / 2) * BALL_RADIUS * 1.8;
+      const ball = shuffledBalls[ballIndex];
+      balls.push(new Ball(x, y, ball.color, ball.number, ball.type));
+      ballIndex++;
+    }
+  }
+}
+
+function resolveBallCollision(b1, b2) {
+  if (!b1.visible || !b2.visible) return;
+
+  const dx = b2.x - b1.x;
+  const dy = b2.y - b1.y;
+  const dist = Math.hypot(dx, dy);
+  
+  if (dist < b1.radius + b2.radius) {
+    // Record first ball hit for foul detection
+    if (b1 === cueBall && firstBallHit === null) {
+      firstBallHit = b2;
+    } else if (b2 === cueBall && firstBallHit === null) {
+      firstBallHit = b1;
+    }
+    
+    // Calculate collision normal
+    const nx = dx / dist;
+    const ny = dy / dist;
+    
+    // Calculate relative velocity
+    const dvx = b2.vx - b1.vx;
+    const dvy = b2.vy - b1.vy;
+    
+    // Calculate relative velocity in terms of the normal direction
+    const velocityAlongNormal = dvx * nx + dvy * ny;
+    
+    // Do not resolve if velocities are separating
+    if (velocityAlongNormal > 0) return;
+    
+    // Calculate restitution (bounciness)
+    const restitution = 0.95;
+    
+    // Calculate impulse scalar
+    const j = -(1 + restitution) * velocityAlongNormal;
+    const impulse = j / (b1.mass + b2.mass);
+    
+    // Apply impulse
+    const impulseX = impulse * nx;
+    const impulseY = impulse * ny;
+    
+    b1.vx -= impulseX * b1.mass;
+    b1.vy -= impulseY * b1.mass;
+    b2.vx += impulseX * b2.mass;
+    b2.vy += impulseY * b2.mass;
+    
+    // Play collision sound
+    sounds.hit.currentTime = 0;
+    sounds.hit.play();
+    
+    // Separate balls to prevent sticking
+    const overlap = (b1.radius + b2.radius - dist) / 2;
+    b1.x -= overlap * nx;
+    b1.y -= overlap * ny;
+    b2.x += overlap * nx;
+    b2.y += overlap * ny;
+  }
+}
+
+function drawCue() {
+  if (!isAiming || isShooting || !gameActive) return;
+  
+  // Calculate angle from cue ball to aim point
+  const cueBackX = cueBall.x - Math.cos(aimAngle) * (CUE_LENGTH + power * 3);
+  const cueBackY = cueBall.y - Math.sin(aimAngle) * (CUE_LENGTH + power * 3);
+  
+  // Draw cue stick
+  ctx.beginPath();
+  ctx.moveTo(cueBackX, cueBackY);
+  ctx.lineTo(cueBall.x, cueBall.y);
+  ctx.strokeStyle = "rgba(210, 180, 140, 0.9)";
+  ctx.lineWidth = 6;
+  ctx.stroke();
+  
+  // Draw power indicator near cue ball
+  if (power > 0) {
+    ctx.beginPath();
+    ctx.arc(cueBall.x, cueBall.y, 20, -Math.PI/2, -Math.PI/2 + (power/MAX_POWER)*Math.PI*2, false);
+    ctx.strokeStyle = "rgba(255, 100, 100, 0.9)";
+    ctx.lineWidth = 4;
+    ctx.stroke();
+  }
+}
+
+function drawPockets() {
+  ctx.fillStyle = "#000";
+  for (let p of pockets) {
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, p.radius, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = "#333";
+    ctx.lineWidth = 2;
+    ctx.stroke();
+  }
+}
+
+function allBallsStopped() {
+  return balls.every(ball => 
+    Math.abs(ball.vx) < 0.1 && 
+    Math.abs(ball.vy) < 0.1
+  );
+}
+
+function update() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  
+  // Draw table felt with wood border
+  ctx.fillStyle = "#006600";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  
+  // Draw wood border
+  ctx.strokeStyle = "#552200";
+  ctx.lineWidth = 20;
+  ctx.strokeRect(0, 0, canvas.width, canvas.height);
+  
+  drawPockets();
+
+  for (let ball of balls) ball.update();
+
+  for (let i = 0; i < balls.length; i++) {
+    for (let j = i + 1; j < balls.length; j++) {
+      resolveBallCollision(balls[i], balls[j]);
+    }
+  }
+
+  for (let ball of balls) ball.draw();
+  
+  // Only allow aiming when all balls are stopped
+  if (allBallsStopped()) {
+    isShooting = false;
+    drawCue();
+    
+    // After all balls stop, process any pocketed balls
+    if (ballsPocketedThisTurn.length > 0) {
+      processPocketedBalls();
+      ballsPocketedThisTurn = [];
+      firstBallHit = null;
+    }
+  } else {
+    isShooting = true;
+  }
+  
+  // Update power indicator
+  powerBar.style.width = `${(power / MAX_POWER) * 100}%`;
+  
+  requestAnimationFrame(update);
+}
+
+function processPocketedBalls() {
+  let validBalls = [];
+  let foulCommitted = false;
+  
+  // Check if cue ball was pocketed (already handled in Ball.update)
+  
+  // Check if first ball hit was valid
+  if (firstBallHit) {
+    // In real 8-ball, you must hit your ball type first (not implemented fully here)
+    // For simplicity, we'll just check if any ball was hit
+  } else {
+    // No ball was hit - foul
+    foul("No ball was hit!");
+    foulCommitted = true;
+  }
+  
+  // Score points for pocketed balls
+  if (!foulCommitted) {
+    for (let ball of ballsPocketedThisTurn) {
+      if (ball !== cueBall && ball.number !== 8) {
+        if (currentPlayer === 1) {
+          playerScore++;
+        } else {
+          opponentScore++;
+        }
+      }
+    }
+    updateScoreDisplay();
+  }
+  
+  // Switch players if no foul and no ball was pocketed
+  if (!foulCommitted && ballsPocketedThisTurn.length === 0) {
+    switchPlayer();
+  }
+}
+
+function foul(reason) {
+  stateMessage.textContent = reason;
+  gameStateDiv.style.display = 'block';
+  
+  // Reset cue ball position
+  cueBall.x = canvas.width * 0.2;
+  cueBall.y = canvas.height / 2;
+  cueBall.vx = cueBall.vy = 0;
+  cueBall.visible = true;
+  
+  // Switch players
+  switchPlayer();
+}
+
+function switchPlayer() {
+  currentPlayer = currentPlayer === 1 ? 2 : 1;
+  setTimeout(() => {
+    gameStateDiv.style.display = 'none';
+  }, 1500);
+}
+
+function check8BallWinCondition() {
+  // Simplified - in real 8-ball, you must pocket all your balls first
+  // Here we'll just check if it was the last ball
+  const visibleBalls = balls.filter(b => b.visible && b !== cueBall);
+  return visibleBalls.length === 0;
+}
+
+function endGame(message) {
+  gameActive = false;
+  stateMessage.textContent = message;
+  gameStateDiv.style.display = 'block';
+}
+
+function updateScoreDisplay() {
+  scoreDisplay.textContent = `Player: ${playerScore} | Opponent: ${opponentScore}`;
+}
+
+// Handle both mouse and touch events
+function getInputPos(event) {
+  const rect = canvas.getBoundingClientRect();
+  const clientX = event.clientX || (event.touches && event.touches[0].clientX);
+  const clientY = event.clientY || (event.touches && event.touches[0].clientY);
+  
+  return {
+    x: (clientX - rect.left) * (canvas.width / rect.width),
+    y: (clientY - rect.top) * (canvas.height / rect.height)
+  };
+}
+
+function startAim(pos) {
+  if (!allBallsStopped() || !gameActive) return;
+  isAiming = true;
+  power = 0;
+  touchStartTime = Date.now();
+  touchStartPos = { ...pos };
+}
+
+function updateAim(pos) {
+  if (!isAiming) return;
+  
+  // Calculate angle from cue ball to input position
+  aimAngle = Math.atan2(pos.y - cueBall.y, pos.x - cueBall.x);
+  
+  // Calculate power based on distance from cue ball
+  const dist = Math.hypot(pos.x - cueBall.x, pos.y - cueBall.y);
+  power = Math.min(MAX_POWER, dist / 2);
+  
+  // Additional power based on time holding
+  const holdTime = (Date.now() - touchStartTime) / 1000;
+  power = Math.min(MAX_POWER, power + (holdTime * 5));
+}
+
+function endAim(pos) {
+  if (!isAiming || isShooting || !gameActive) return;
+  isAiming = false;
+  
+  if (power > 0) {
+    // Calculate velocity based on power and angle
+    const force = power * POWER_SCALE;
+    cueBall.vx = Math.cos(aimAngle) * force;
+    cueBall.vy = Math.sin(aimAngle) * force;
+    
+    sounds.cue.currentTime = 0;
+    sounds.cue.play();
+  }
+}
+
+// Mouse events
+canvas.addEventListener('mousedown', (e) => {
+  startAim(getInputPos(e));
+});
+
+canvas.addEventListener('mousemove', (e) => {
+  updateAim(getInputPos(e));
+});
+
+canvas.addEventListener('mouseup', (e) => {
+  endAim(getInputPos(e));
+});
+
+canvas.addEventListener('mouseleave', () => {
+  if (isAiming) {
+    isAiming = false;
+    power = 0;
+  }
+});
+
+// Touch events
+canvas.addEventListener('touchstart', (e) => {
+  e.preventDefault();
+  lastTouchTime = Date.now();
+  startAim(getInputPos(e));
+});
+
+canvas.addEventListener('touchmove', (e) => {
+  e.preventDefault();
+  updateAim(getInputPos(e));
+});
+
+canvas.addEventListener('touchend', (e) => {
+  e.preventDefault();
+  if (Date.now() - lastTouchTime < 300) {
+    endAim(getInputPos(e));
+  } else {
+    isAiming = false;
+    power = 0;
+  }
+});
+
+// Reset game
+resetBtn.addEventListener('click', () => {
+  setup();
+});
+
+// Handle window resize
+window.addEventListener('resize', () => {
+  resizeCanvas();
+});
+
+// Initialize game
+resizeCanvas();
+setup();
+update();
+</script>
+</body>
+</html>
